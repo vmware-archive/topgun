@@ -30,8 +30,9 @@ import (
 
 var (
 	deploymentName, flyTarget string
-
-	atcIP, atcExternalURL string
+	dbIP                      string
+	atcIP, atcExternalURL     string
+	atcIP2, atcExternalURL2   string
 
 	concourseReleaseVersion, gardenRuncReleaseVersion string
 	stemcellVersion                                   string
@@ -96,7 +97,11 @@ var _ = BeforeEach(func() {
 	bosh("delete-deployment")
 
 	atcIP = fmt.Sprintf("10.234.%d.2", GinkgoParallelNode())
+	atcIP2 = fmt.Sprintf("10.234.%d.3", GinkgoParallelNode())
+	dbIP2 = fmt.Sprintf("10.234.%d.4", GinkgoParallelNode())
+
 	atcExternalURL = fmt.Sprintf("http://%s:8080", atcIP)
+	atcExternalURL2 = fmt.Sprintf("http://%s:8080", atcIP2)
 })
 
 var _ = AfterEach(func() {
@@ -114,7 +119,9 @@ func Deploy(manifest string) {
 		"deploy", manifest,
 		"-v", "deployment-name="+deploymentName,
 		"-v", "atc-ip="+atcIP,
+		"-v", "atc-ip-2="+atcIP2,
 		"-v", "atc-external-url="+atcExternalURL,
+		"-v", "atc-external-url-2="+atcExternalURL2,
 		"-v", "concourse-release-version="+concourseReleaseVersion,
 		"-v", "garden-runc-release-version="+gardenRuncReleaseVersion,
 		"-v", "stemcell-version="+stemcellVersion,
