@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"time"
 
 	_ "github.com/lib/pq"
 	. "github.com/onsi/ginkgo"
@@ -31,7 +30,11 @@ var _ = Describe("[#137641079] ATC Shutting down", func() {
 
 		Describe("tracking builds previously tracked by shutdown ATC", func() {
 
-			var stopSession *gexec.Session
+			var (
+				stopSession    *gexec.Session
+				stopSession2   *gexec.Session
+				restartSession *gexec.Session
+			)
 
 			BeforeEach(func() {
 				stopSession = spawnBosh("stop", "web-2/0")
@@ -61,34 +64,39 @@ var _ = Describe("[#137641079] ATC Shutting down", func() {
 					<-buildSession.Exited
 				})
 
-				It("waits for the build", func() {
-					Eventually(restartSession).Should(gbytes.Say(`Updating (instance|job)`))
-					Consistently(restartSession, 5*time.Minute).ShouldNot(gexec.Exit())
-				})
+				Context("when the other ATC comes back up", func() {
 
-				It("finishes restarting once the build is done", func() {
-					By("hijacking the build to tell it to finish")
-					Eventually(func() int {
-						session := spawnFlyInteractive(
-							bytes.NewBufferString("3\n"),
-							"hijack",
-							"-b", buildID,
-							"-s", "one-off",
-							"touch", "/tmp/stop-waiting",
-						)
+					BeforeEach(func() {
+						stopSession2 = spawnBosh("stop", "web/0")
+						restartSession = spawnBosh("restart", "web-2/0")
+					})
 
-						<-session.Exited
-						return session.ExitCode()
-					}).Should(Equal(0))
+					AfterEach(func() {
+						<-stopSession2.Exited
+						<-restartSession.Exited
+					})
 
-					By("waiting for the build to exit")
-					Eventually(buildSession).Should(gbytes.Say("done"))
-					<-buildSession.Exited
-					Expect(buildSession.ExitCode()).To(Equal(0))
+					It("finishes restarting once the build is done", func() {
+						By("hijacking the build to tell it to finish")
+						Eventually(func() int {
+							session := spawnFlyInteractive(
+								bytes.NewBufferString("3\n"),
+								"hijack",
+								"-b", buildID,
+								"-s", "one-off",
+								"touch", "/tmp/stop-waiting",
+							)
 
-					By("successfully restarting")
-					<-restartSession.Exited
-					Expect(restartSession.ExitCode()).To(Equal(0))
+							<-session.Exited
+							return session.ExitCode()
+						}).Should(Equal(0))
+
+						By("waiting for the build to exit")
+						Eventually(buildSession).Should(gbytes.Say("done"))
+						<-buildSession.Exited
+						Expect(buildSession.ExitCode()).To(Equal(0))
+
+					})
 				})
 			})
 

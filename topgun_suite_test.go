@@ -98,7 +98,7 @@ var _ = BeforeEach(func() {
 
 	atcIP = fmt.Sprintf("10.234.%d.2", GinkgoParallelNode())
 	atcIP2 = fmt.Sprintf("10.234.%d.3", GinkgoParallelNode())
-	dbIP2 = fmt.Sprintf("10.234.%d.4", GinkgoParallelNode())
+	dbIP = fmt.Sprintf("10.234.%d.4", GinkgoParallelNode())
 
 	atcExternalURL = fmt.Sprintf("http://%s:8080", atcIP)
 	atcExternalURL2 = fmt.Sprintf("http://%s:8080", atcIP2)
