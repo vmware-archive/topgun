@@ -6,6 +6,7 @@ import (
 	"os/exec"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ssm"
 	"github.com/aws/aws-sdk-go/service/sts"
@@ -52,21 +53,38 @@ var _ = Describe("AWS SSM", func() {
 	}
 
 	var awsRegion string
-	var awsCreds *sts.Credentials
+	var awsAccessKeyID, awsSecretAccessKey, awsSessionToken string
 
 	BeforeEach(func() {
-		awsSession, err := session.NewSession()
-		if err != nil {
-			Skip("Can not create AWS session")
+		awsRegion = os.Getenv("AWS_SSM_REGION")
+		awsAccessKeyID = os.Getenv("AWS_SSM_ACCESS_KEY_ID")
+		awsSecretAccessKey = os.Getenv("AWS_SSM_SECRET_ACCESS_KEY")
+		awsSessionToken = os.Getenv("AWS_SSM_SESSION_TOKEN")
+
+		if awsRegion == "" || awsAccessKeyID == "" || awsSecretAccessKey == "" {
+			Skip("must set $AWS_SSM_REGION, $AWS_SSM_ACCESS_KEY_ID, $AWS_SSM_SECRET_ACCESS_KEY, and optionally $AWS_SSM_SESSION_TOKEN to run AWS SSM tests")
 		}
 
-		stsApi := sts.New(awsSession)
-
-		token, err := stsApi.GetSessionToken(nil)
+		awsSession, err := session.NewSession(&aws.Config{
+			Region: aws.String(awsRegion),
+			Credentials: credentials.NewStaticCredentials(
+				awsAccessKeyID,
+				awsSecretAccessKey,
+				awsSessionToken,
+			),
+		})
 		Expect(err).ToNot(HaveOccurred())
 
-		awsRegion = *stsApi.Config.Region
-		awsCreds = token.Credentials
+		if awsSessionToken == "" {
+			stsApi := sts.New(awsSession)
+
+			token, err := stsApi.GetSessionToken(nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			awsAccessKeyID = *token.Credentials.AccessKeyId
+			awsSecretAccessKey = *token.Credentials.SecretAccessKey
+			awsSessionToken = *token.Credentials.SessionToken
+		}
 
 		// Verify that all secret values are present in SSM parameter store
 		var secrets = map[string]string{
@@ -103,9 +121,9 @@ var _ = Describe("AWS SSM", func() {
 				"deployments/concourse.yml",
 				"-o", "operations/configure-ssm.yml",
 				"-v", "aws_region="+awsRegion,
-				"-v", "aws_access_key="+*awsCreds.AccessKeyId,
-				"-v", "aws_secret_key="+*awsCreds.SecretAccessKey,
-				"-v", "aws_session_token="+*awsCreds.SessionToken,
+				"-v", "aws_access_key="+awsAccessKeyID,
+				"-v", "aws_secret_key="+awsSecretAccessKey,
+				"-v", "aws_session_token="+awsSessionToken,
 			)
 		})
 		Context("with a pipeline build", func() {
