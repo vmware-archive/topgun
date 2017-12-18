@@ -6,9 +6,9 @@ import (
 	"os/exec"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ssm"
+	"github.com/aws/aws-sdk-go/service/sts"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -52,19 +52,22 @@ var _ = Describe("AWS SSM", func() {
 	}
 
 	var awsRegion string
-	var awsCreds credentials.Value
+	var awsCreds *sts.Credentials
 
 	BeforeEach(func() {
 		awsSession, err := session.NewSession()
 		if err != nil {
 			Skip("Can not create AWS session")
 		}
-		ssmApi := ssm.New(awsSession)
-		awsRegion = *ssmApi.Config.Region
-		awsCreds, err = ssmApi.Config.Credentials.Get()
-		if err != nil {
-			Skip("Can not retrive AWS credentials")
-		}
+
+		stsApi := sts.New(awsSession)
+
+		token, err := stsApi.GetSessionToken(nil)
+		Expect(err).ToNot(HaveOccurred())
+
+		awsRegion = *stsApi.Config.Region
+		awsCreds = token.Credentials
+
 		// Verify that all secret values are present in SSM parameter store
 		var secrets = map[string]string{
 			"/concourse-topgun/main/pipeline-ssm-test/resource_type_repository":  "concourse/time-resource",
@@ -80,6 +83,9 @@ var _ = Describe("AWS SSM", func() {
 		for n := range secrets {
 			names = append(names, aws.String(n))
 		}
+
+		ssmApi := ssm.New(awsSession)
+
 		result, err := ssmApi.GetParameters(&ssm.GetParametersInput{Names: names, WithDecryption: aws.Bool(true)})
 		Expect(err).To(BeNil())
 		Expect(result.InvalidParameters).To(BeEmpty())
@@ -97,9 +103,9 @@ var _ = Describe("AWS SSM", func() {
 				"deployments/concourse.yml",
 				"-o", "operations/configure-ssm.yml",
 				"-v", "aws_region="+awsRegion,
-				"-v", "aws_access_key="+awsCreds.AccessKeyID,
-				"-v", "aws_secret_key="+awsCreds.SecretAccessKey,
-				"-v", "aws_session_token="+awsCreds.SessionToken,
+				"-v", "aws_access_key="+*awsCreds.AccessKeyId,
+				"-v", "aws_secret_key="+*awsCreds.SecretAccessKey,
+				"-v", "aws_session_token="+*awsCreds.SessionToken,
 			)
 		})
 		Context("with a pipeline build", func() {
