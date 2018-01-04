@@ -2,11 +2,20 @@ package topgun_test
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/gob"
+	"encoding/json"
+	"fmt"
 	"io/ioutil"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cloudfoundry-incubator/credhub-cli/credhub"
 	"github.com/cloudfoundry-incubator/credhub-cli/credhub/credentials/values"
@@ -61,6 +70,51 @@ var _ = Describe("Credhub", func() {
 
 			varsStore := filepath.Join(varsDir, "vars.yml")
 
+			// generate rsa keys
+			exec.Command("openssl", "genrsa", "-out", "private_key.pem", "1024")
+
+			// generate client cert
+			random := rand.Reader
+
+			var key rsa.PrivateKey
+
+			loadKey("private_key.pem", &key)
+
+			now := time.Now()
+			then := now.Add(60 * 60 * 24 * 365 * 1000 * 1000 * 1000) // one year
+			template := x509.Certificate{
+				SerialNumber: big.NewInt(1),
+				Subject: pkix.Name{
+					CommonName:         "creadhubCA",
+					Organization:       []string{"Cloud Foundry"},
+					OrganizationalUnit: []string{"app:b67446e5-b2b0-4648-a0d0-772d3d399dcb"},
+				},
+				//    NotBefore: time.Unix(now, 0).UTC(),
+				//    NotAfter:  time.Unix(now+60*60*24*365, 0).UTC(),
+				NotBefore: now,
+				NotAfter:  then,
+
+				SubjectKeyId: []byte{1, 2, 3, 4},
+				KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+				ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+
+				BasicConstraintsValid: true,
+				IsCA: true,
+				// DNSNames:              []string{"jan.newmarch.name", "localhost"},
+			}
+			rootCABytes, err := x509.CreateCertificate(random, &template,
+				&template, &key.PublicKey, &key)
+			checkError(err)
+
+			// populate varr.yml with generated certs
+			var varsContent = fmt.Sprintf(
+				`
+credhub_client_topgun:
+	ca: |
+		%s
+`, string(rootCABytes))
+			err = ioutil.WriteFile(varsStore, []byte(varsContent), 0644)
+
 			Deploy(
 				"deployments/concourse.yml",
 				"-o", "operations/add-credhub.yml",
@@ -77,11 +131,15 @@ var _ = Describe("Credhub", func() {
 					CA          string `yaml:"ca"`
 					Certificate string `yaml:"certificate"`
 					PrivateKey  string `yaml:"private_key"`
-				} `yaml:"credhub_client"`
+				} `yaml:"credhub_client_topgun"`
 			}
 
 			err = yaml.Unmarshal(varsBytes, &vars)
 			Expect(err).ToNot(HaveOccurred())
+
+			varsJson, _ := json.Marshal(vars)
+			fmt.Println("vars struct content:")
+			fmt.Println(string(varsJson))
 
 			clientCert := filepath.Join(varsDir, "client.cert")
 			err = ioutil.WriteFile(clientCert, []byte(vars.CredHubClient.Certificate), 0644)
@@ -101,7 +159,10 @@ var _ = Describe("Credhub", func() {
 
 		Context("with a pipeline build", func() {
 			BeforeEach(func() {
-				credhubClient.SetValue("/concourse/main/pipeline-credhub-test/resource_type_repository", values.Value("concourse/time-resource"), credhub.Overwrite)
+				value, err := credhubClient.SetValue("/concourse/main/pipeline-credhub-test/resource_type_repository", values.Value("concourse/time-resource"), credhub.Overwrite)
+				Expect(err).ToNot(HaveOccurred())
+
+				fmt.Println(value)
 				credhubClient.SetValue("/concourse/main/pipeline-credhub-test/time_resource_interval", values.Value("10m"), credhub.Overwrite)
 				credhubClient.SetUser("/concourse/main/pipeline-credhub-test/job_secret", values.User{
 					Username: "Hello",
@@ -189,3 +250,19 @@ var _ = Describe("Credhub", func() {
 		})
 	})
 })
+
+func loadKey(fileName string, key interface{}) {
+	inFile, err := os.Open(fileName)
+	checkError(err)
+	decoder := gob.NewDecoder(inFile)
+	err = decoder.Decode(key)
+	checkError(err)
+	inFile.Close()
+}
+
+func checkError(err error) {
+	if err != nil {
+		fmt.Println("Fatal error ", err.Error())
+		os.Exit(1)
+	}
+}

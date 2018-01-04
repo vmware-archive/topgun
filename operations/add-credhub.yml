@@ -128,5 +128,16 @@
 - type: replace
   path: /variables?/-
   value:
+    name: credhub_client_topgun
+    type: certificate
+    options:
+      ca: credhub_ca
+      common_name: credhubCA
+      extended_key_usage:
+      - client_auth
+
+- type: replace
+  path: /variables?/-
+  value:
     name: credhub_encryption_password
     type: password
