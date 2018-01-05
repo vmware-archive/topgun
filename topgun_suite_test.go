@@ -159,7 +159,7 @@ var _ = AfterEach(func() {
 		boshLogs = nil
 	}
 
-	// deleteAllContainers()
+	deleteAllContainers()
 
 	bosh("delete-deployment")
 

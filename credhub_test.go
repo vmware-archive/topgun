@@ -1,13 +1,13 @@
 package topgun_test
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/gob"
-	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"math/big"
@@ -26,7 +26,7 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
-var _ = Describe("Credhub", func() {
+var _ = FDescribe("Credhub", func() {
 	pgDump := func() *gexec.Session {
 		dump := exec.Command("pg_dump", "-U", "atc", "-h", dbInstance.IP, "atc")
 		dump.Env = append(os.Environ(), "PGPASSWORD=dummy-password")
@@ -69,51 +69,8 @@ var _ = Describe("Credhub", func() {
 			defer os.RemoveAll(varsDir)
 
 			varsStore := filepath.Join(varsDir, "vars.yml")
-
-			// generate rsa keys
-			exec.Command("openssl", "genrsa", "-out", "private_key.pem", "1024")
-
-			// generate client cert
-			random := rand.Reader
-
-			var key rsa.PrivateKey
-
-			loadKey("private_key.pem", &key)
-
-			now := time.Now()
-			then := now.Add(60 * 60 * 24 * 365 * 1000 * 1000 * 1000) // one year
-			template := x509.Certificate{
-				SerialNumber: big.NewInt(1),
-				Subject: pkix.Name{
-					CommonName:         "creadhubCA",
-					Organization:       []string{"Cloud Foundry"},
-					OrganizationalUnit: []string{"app:b67446e5-b2b0-4648-a0d0-772d3d399dcb"},
-				},
-				//    NotBefore: time.Unix(now, 0).UTC(),
-				//    NotAfter:  time.Unix(now+60*60*24*365, 0).UTC(),
-				NotBefore: now,
-				NotAfter:  then,
-
-				SubjectKeyId: []byte{1, 2, 3, 4},
-				KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-				ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-
-				BasicConstraintsValid: true,
-				IsCA: true,
-				// DNSNames:              []string{"jan.newmarch.name", "localhost"},
-			}
-			rootCABytes, err := x509.CreateCertificate(random, &template,
-				&template, &key.PublicKey, &key)
-			checkError(err)
-
-			// populate varr.yml with generated certs
-			var varsContent = fmt.Sprintf(
-				`
-credhub_client_topgun:
-	ca: |
-		%s
-`, string(rootCABytes))
-			err = ioutil.WriteFile(varsStore, []byte(varsContent), 0644)
+			err = generateCredhubCerts(varsStore)
+			Expect(err).ToNot(HaveOccurred())
 
 			Deploy(
 				"deployments/concourse.yml",
@@ -136,10 +93,6 @@ credhub_client_topgun:
 
 			err = yaml.Unmarshal(varsBytes, &vars)
 			Expect(err).ToNot(HaveOccurred())
-
-			varsJson, _ := json.Marshal(vars)
-			fmt.Println("vars struct content:")
-			fmt.Println(string(varsJson))
 
 			clientCert := filepath.Join(varsDir, "client.cert")
 			err = ioutil.WriteFile(clientCert, []byte(vars.CredHubClient.Certificate), 0644)
@@ -230,7 +183,7 @@ credhub_client_topgun:
 			})
 		})
 
-		Context("with a one-off build", func() {
+		FContext("with a one-off build", func() {
 			BeforeEach(func() {
 				credhubClient.SetValue("/concourse/main/task_secret", values.Value("Hiii"), credhub.Overwrite)
 				credhubClient.SetValue("/concourse/main/image_resource_repository", values.Value("busybox"), credhub.Overwrite)
@@ -251,18 +204,160 @@ credhub_client_topgun:
 	})
 })
 
-func loadKey(fileName string, key interface{}) {
-	inFile, err := os.Open(fileName)
-	checkError(err)
-	decoder := gob.NewDecoder(inFile)
-	err = decoder.Decode(key)
-	checkError(err)
-	inFile.Close()
+type Cert struct {
+	CA          string `yaml:"ca"`
+	Certificate string `yaml:"certificate"`
+	PrivateKey  string `yaml:"private_key"`
 }
 
-func checkError(err error) {
-	if err != nil {
-		fmt.Println("Fatal error ", err.Error())
-		os.Exit(1)
+func generateCredhubCerts(filepath string) (err error) {
+	var vars struct {
+		CredHubCA           Cert `yaml:"credhub_ca"`
+		CredHubClientAtc    Cert `yaml:"credhub_client_atc"`
+		CredHubClientTopgun Cert `yaml:"credhub_client_topgun"`
 	}
+
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	// root CA cert
+	// rootCaTemplate := x509.Certificate{
+	// 	SerialNumber: big.NewInt(1),
+	// 	Subject: pkix.Name{
+	// 		CommonName:   "credhubCA",
+	// 		Organization: []string{"Cloud Foundry"},
+	// 	},
+	// 	NotBefore: now,
+	// 	NotAfter:  then,
+
+	// 	SubjectKeyId: []byte{1, 2, 3, 4},
+	// 	KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+	// 	ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+
+	// 	BasicConstraintsValid: true,
+	// 	IsCA: true,
+	// }
+	rootCaTemplate, rootCaCert, err := generateCert("credhubCA", "", true, 0, nil, key)
+	if err != nil {
+		return err
+	}
+
+	var b bytes.Buffer
+	writer := bufio.NewWriter(&b)
+
+	pem.Encode(writer, &pem.Block{Type: "CERTIFICATE", Bytes: rootCaCert})
+	writer.Flush()
+	rootCa := b.String()
+	b.Reset()
+
+	pem.Encode(writer, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	writer.Flush()
+	rootCaKey := b.String()
+	b.Reset()
+
+	vars.CredHubCA.CA = rootCa
+	vars.CredHubCA.Certificate = rootCa
+	vars.CredHubCA.PrivateKey = rootCaKey
+
+	// client cert for topgun
+	// clientTopgunTemplate := x509.Certificate{
+	// 	SerialNumber: big.NewInt(1),
+	// 	Subject: pkix.Name{
+	// 		CommonName:         "credhubCA",
+	// 		Organization:       []string{"Cloud Foundry"},
+	// 		OrganizationalUnit: []string{"app:eef9440f-7d2b-44b4-99e2-a619cbec99e6"},
+	// 	},
+	// 	NotBefore: now,
+	// 	NotAfter:  then,
+
+	// 	SubjectKeyId: []byte{1, 2, 3, 4},
+	// 	KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+	// 	ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+
+	// 	BasicConstraintsValid: true,
+	// }
+	// clientTopgunCert, _ := x509.CreateCertificate(random, &clientTopgunTemplate, &rootCaTemplate, &key.PublicKey, key)
+	_, clientTopgunCert, err := generateCert("credhubCA", "app:eef9440f-7d2b-44b4-99e2-a619cbec99e6", false, x509.ExtKeyUsageClientAuth, &rootCaTemplate, key)
+	if err != nil {
+		return err
+	}
+
+	pem.Encode(writer, &pem.Block{Type: "CERTIFICATE", Bytes: clientTopgunCert})
+	writer.Flush()
+	clientTopgun := b.String()
+	b.Reset()
+
+	vars.CredHubClientTopgun.CA = rootCa
+	vars.CredHubClientTopgun.Certificate = clientTopgun
+	vars.CredHubClientTopgun.PrivateKey = rootCaKey
+
+	// client cert for atc
+	// clientATCTemplate := x509.Certificate{
+	// 	SerialNumber: big.NewInt(1),
+	// 	Subject: pkix.Name{
+	// 		CommonName:         "concourse",
+	// 		Organization:       []string{"Cloud Foundry"},
+	// 		OrganizationalUnit: []string{"app:df4d7e2c-edfa-432d-ab7e-ee97846b06d0"},
+	// 	},
+	// 	NotBefore: now,
+	// 	NotAfter:  then,
+
+	// 	SubjectKeyId: []byte{1, 2, 3, 4},
+	// 	KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+	// 	ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+
+	// 	BasicConstraintsValid: true,
+	// }
+	// clientAtcCert, _ := x509.CreateCertificate(random, &clientATCTemplate, &rootCaTemplate, &key.PublicKey, key)
+
+	_, clientAtcCert, err := generateCert("concourse", "app:df4d7e2c-edfa-432d-ab7e-ee97846b06d0", false, x509.ExtKeyUsageClientAuth, &rootCaTemplate, key)
+	if err != nil {
+		return err
+	}
+
+	pem.Encode(writer, &pem.Block{Type: "CERTIFICATE", Bytes: clientAtcCert})
+	writer.Flush()
+	clientAtc := b.String()
+	b.Reset()
+
+	vars.CredHubClientAtc.CA = rootCa
+	vars.CredHubClientAtc.Certificate = clientAtc
+	vars.CredHubClientAtc.PrivateKey = rootCaKey
+
+	varsYaml, _ := yaml.Marshal(&vars)
+	ioutil.WriteFile(filepath, varsYaml, 0644)
+	return nil
+}
+
+func generateCert(commonName string, orgUnit string, isCA bool, extKeyUsage x509.ExtKeyUsage, parent *x509.Certificate, priv interface{}) (template x509.Certificate, cert []byte, err error) {
+
+	random := rand.Reader
+	now := time.Now()
+	then := now.Add(60 * 60 * 24 * 1000 * 1000 * 1000) // 24 hours
+
+	template = x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName:         commonName,
+			Organization:       []string{"Cloud Foundry"},
+			OrganizationalUnit: []string{orgUnit},
+		},
+		NotBefore: now,
+		NotAfter:  then,
+
+		SubjectKeyId: []byte{1, 2, 3, 4},
+		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+
+		BasicConstraintsValid: true,
+		IsCA: isCA,
+	}
+
+	if isCA {
+		parent = &template
+	}
+
+	cert, err = x509.CreateCertificate(random, &template, parent, &priv.PublicKey, priv)
+	if err != nil {
+		return nil, nil, err
+	}
+	return template, cert, _
 }
