@@ -12,7 +12,11 @@ releases:
 instance_groups:
 - name: web
   instances: 2
-  networks: [{name: topgun}]
+  networks:
+  - name: topgun
+    static_ips:
+    - 10.234.0.2
+    - 10.234.0.3
   azs: [z1]
   persistent_disk: 1240
   vm_type: topgun
@@ -34,8 +38,8 @@ instance_groups:
         role: &db-role
           name: atc
           password: dummy-password
-
       build_tracker_interval: 5m
+      external_url: http://10.234.0.2:8080
 
   - release: concourse
     name: tsa
