@@ -1,0 +1,42 @@
+version: '3'
+
+services:
+  db:
+    image: postgres
+    ports: ["5432"]
+    environment:
+    - POSTGRES_DB=concourse
+    - POSTGRES_USER=dev
+    - POSTGRES_PASSWORD=
+  
+  web:
+    image: topgun
+    command: "/bin/bash -c '/usr/local/bin/dumb-init /usr/local/bin/concourse web --peer-url=http://$$HOSTNAME:8080'"
+    depends_on: [db]
+    ports: ["8080"]
+    environment:
+    - CONCOURSE_POSTGRES_HOST=db
+    - CONCOURSE_POSTGRES_USER=dev
+    - CONCOURSE_POSTGRES_PASSWORD=dev
+    - CONCOURSE_POSTGRES_DATABASE=concourse
+    - CONCOURSE_EXTERNAL_URL=http://localhost:8080
+    - CONCOURSE_ADD_LOCAL_USER=test:test,guest:guest
+    - CONCOURSE_MAIN_TEAM_LOCAL_USER=test
+    - CONCOURSE_TSA_HEARTBEAT_INTERVAL=5s
+    - CONCOURSE_LOG_LEVEL=debug
+
+  worker:
+    image: topgun
+    command: "/bin/bash -c '/usr/local/bin/dumb-init /usr/local/bin/concourse worker'"
+    privileged: true
+    depends_on: [web]
+    ports: ["7777", "7788"]
+    environment:
+    - CONCOURSE_FORWARD_REBALANCE_TIME=2s
+    - CONCOURSE_TSA_HOST=web:2222
+    - CONCOURSE_EPHEMERAL=true
+      # avoid using loopbacks
+    - CONCOURSE_BAGGAGECLAIM_DRIVER=overlay
+      # so that CI can configure a different network range that doesn't overlap
+      # with the outer Garden
+    - CONCOURSE_GARDEN_NETWORK_POOL
