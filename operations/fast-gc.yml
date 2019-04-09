@@ -1,3 +1,0 @@
-- type: replace
-  path: /instance_groups/name=concourse/jobs/name=atc/properties/gc_interval?
-  value: 1s
